@@ -1,0 +1,83 @@
+#Categorizacion de los pasos que se requiere ejecutar
+stages:
+  - test
+  - security
+  - deploy
+
+#Variables por ambiente o especificas al producto
+variables:
+  QA_PRIVATE_KEY: xxx
+  QA_SERVER_REMOTE_USER: xx
+  QA_SERVER_REMOTE_HOST: xxx.xxx.com
+  QA_SERVER_REMOTE_PORT: 22
+  QA_SERVER_REMOTE_DIR: /var/www/xxx
+
+
+# Evaluacion de calidad sobre el codigo
+php-code-quality:
+  stage: test
+  image: adamculp/php-code-quality
+  allow_failure: true
+  script:
+    - vendor/bin/phploc app
+    - vendor/bin/pdepend app
+    - vendor/bin/phpmetrics app
+    - vendor/bin/php-cs-fixer app
+    - vendor/bin/phpstan app
+  dependencies: []
+
+codestyle:
+  stage: test
+  image: lorisleiva/laravel-docker
+  allow_failure: true
+  script:
+    - phpcs --extensions=php .
+  dependencies: []
+
+phpmd:
+  stage: test
+  image: edbizarro/gitlab-ci-pipeline-php:${PHP_VERSION}
+  allow_failure: true
+  script:
+    - test -f phpmd.phar || curl -L https://github.com/phpmd/phpmd/releases/download/2.7.0/phpmd.phar
+    - php phpmd.phar . text codesize,unusedcode,naming
+  dependencies: []
+
+#Evaluacion de Seguridad en los paquetes de PHP
+sensiolabs:
+  stage: security
+  image: edbizarro/gitlab-ci-pipeline-php:${PHP_VERSION}
+  script:
+    - test -d security-checker || git clone https://github.com/sensiolabs/security-checker.git
+    - cd security-checker
+    - composer install
+    - php security-checker security:check ../composer.lock
+  dependencies: []
+  cache:
+    paths:
+      - security-checker/
+
+#Despliegue al servidor destino
+deploy_qa:
+  stage: deploy
+  image: php:7.3
+  script:
+    - rsync -hrvz --exclude=readme.md --exclude=.git* --exclude=/vendor --exclude=/docs -e "ssh -p ${QA_SERVER_REMOTE_PORT}" --rsync-path="sudo rsync" --recursive --links --safe-links . ${QA_SERVER_REMOTE_USER}@${QA_SERVER_REMOTE_HOST}:${QA_SERVER_REMOTE_DIR}
+    # Clear Settings Laravel
+    - ssh -p${QA_SERVER_REMOTE_PORT} ${QA_SERVER_REMOTE_USER}@${QA_SERVER_REMOTE_HOST} "cd ${QA_SERVER_REMOTE_DIR} && sudo php artisan config:clear"
+    - ssh -p${QA_SERVER_REMOTE_PORT} ${QA_SERVER_REMOTE_USER}@${QA_SERVER_REMOTE_HOST} "cd ${QA_SERVER_REMOTE_DIR} && sudo php artisan cache:clear"
+    - ssh -p${QA_SERVER_REMOTE_PORT} ${QA_SERVER_REMOTE_USER}@${QA_SERVER_REMOTE_HOST} "cd ${QA_SERVER_REMOTE_DIR} && sudo php artisan view:clear"
+    - ssh -p${QA_SERVER_REMOTE_PORT} ${QA_SERVER_REMOTE_USER}@${QA_SERVER_REMOTE_HOST} "cd ${QA_SERVER_REMOTE_DIR} && sudo composer dump-autoload"
+    - ssh -p${QA_SERVER_REMOTE_PORT} ${QA_SERVER_REMOTE_USER}@${QA_SERVER_REMOTE_HOST} "cd ${QA_SERVER_REMOTE_DIR} && sudo php artisan storage:link"
+    
+    #Laravel Key Generate
+    - ssh -p${QA_SERVER_REMOTE_PORT} ${QA_SERVER_REMOTE_USER}@${QA_SERVER_REMOTE_HOST} "cd ${QA_SERVER_REMOTE_DIR} && sudo php artisan key:generate"
+
+    # Set permission
+    - ssh -p${QA_SERVER_REMOTE_PORT} ${QA_SERVER_REMOTE_USER}@${QA_SERVER_REMOTE_HOST} "sudo chown -R www-data. ${QA_SERVER_REMOTE_DIR}"
+    
+    # End
+    - echo "deploy qa"
+  only:
+    - qa
+  when: on_success
